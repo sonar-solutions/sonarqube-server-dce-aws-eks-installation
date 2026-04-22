@@ -145,7 +145,42 @@ resource "aws_iam_role_policy_attachment" "eks_container_registry_policy" {
   role       = aws_iam_role.eks_node_group.name
 }
 
+# IAM Role for EBS CSI Driver (required for persistent volume provisioning)
+resource "aws_iam_role" "ebs_csi_driver" {
+  name                 = "${var.cluster_name}-ebs-csi-driver"
+  path                 = var.role_path != "" ? var.role_path : "/"
+  permissions_boundary = var.iam_permissions_boundary != "" ? var.iam_permissions_boundary : null
 
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Effect = "Allow"
+        Principal = {
+          Federated = module.eks.oidc_provider_arn
+        }
+        Condition = {
+          StringEquals = {
+            "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub" = "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+            "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud" = "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.cluster_name}-ebs-csi-driver-role"
+    Environment = var.environment
+    Owner       = var.owner_tag
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  role       = aws_iam_role.ebs_csi_driver.name
+}
 
 # IAM Role for EKS Admin (user access to cluster)
 resource "aws_iam_role" "eks_admin" {
@@ -277,7 +312,11 @@ module "eks" {
       before_compute = true
       resolve_conflicts_on_update = "OVERWRITE"
     }
-    #depends_on = [module.vpc]
+    aws-ebs-csi-driver = {
+      most_recent                 = true
+      resolve_conflicts_on_update = "OVERWRITE"
+      service_account_role_arn    = aws_iam_role.ebs_csi_driver.arn
+    }
   }
   
   # Add node groups
@@ -366,6 +405,28 @@ resource "time_sleep" "wait_for_cluster" {
     cluster_endpoint = module.eks.cluster_endpoint
     cluster_name     = module.eks.cluster_name
   }
+}
+
+# gp3 storage class for EBS CSI driver — used by SonarQube search node persistence
+resource "kubernetes_storage_class" "gp3" {
+  metadata {
+    name = "gp3"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "true"
+    }
+  }
+  storage_provisioner    = "ebs.csi.aws.com"
+  parameters = {
+    type   = "gp3"
+    fsType = "ext4"
+  }
+  volume_binding_mode    = "WaitForFirstConsumer"
+  reclaim_policy         = "Delete"
+  allow_volume_expansion = true
+
+  depends_on = [
+    time_sleep.wait_for_cluster
+  ]
 }
 
 # Create Kubernetes secret for SonarQube database password
@@ -575,31 +636,10 @@ resource "helm_release" "sonarqube" {
       }
     }),
 
-    # NLB Service configuration — port 443 with TLS termination → pod port 9000
-    # NLBs operate at Layer 4 and are provisioned via Service annotations (not Ingress).
+    # Disable ingress — external access is handled by the standalone kubernetes_service.sonarqube_nlb resource below.
     yamlencode({
       ingress = {
         enabled = false
-      }
-      service = {
-        type         = "LoadBalancer"
-        externalPort = 443
-        internalPort = 9000
-        annotations = {
-          # Tell the AWS Load Balancer Controller to provision an NLB
-          "service.beta.kubernetes.io/aws-load-balancer-type"                            = "external"
-          "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type"                 = "ip"
-          "service.beta.kubernetes.io/aws-load-balancer-scheme"                          = "internet-facing"
-          # TLS termination at the NLB; plain TCP forwarded to pods on port 9000
-          "service.beta.kubernetes.io/aws-load-balancer-ssl-cert"                        = aws_acm_certificate.sonarqube.arn
-          "service.beta.kubernetes.io/aws-load-balancer-ssl-ports"                       = "443"
-          "service.beta.kubernetes.io/aws-load-balancer-backend-protocol"                = "tcp"
-          # HTTP health check against the SonarQube status endpoint
-          "service.beta.kubernetes.io/aws-load-balancer-healthcheck-path"                = "/api/system/status"
-          "service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol"            = "HTTP"
-          "service.beta.kubernetes.io/aws-load-balancer-healthcheck-healthy-threshold"   = "2"
-          "service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold" = "2"
-        }
       }
     })
   ]
@@ -617,6 +657,47 @@ resource "helm_release" "sonarqube" {
   wait          = true
   wait_for_jobs = true
   timeout       = 900
+}
+
+# Standalone NLB service for external access to SonarQube.
+# Kept separate from the Helm release so that NLB annotations are not
+# propagated to the chart's internal headless/search services.
+resource "kubernetes_service" "sonarqube_nlb" {
+  metadata {
+    name      = "sonarqube-nlb"
+    namespace = "default"
+    annotations = {
+      # Tell the AWS Load Balancer Controller to provision an NLB
+      "service.beta.kubernetes.io/aws-load-balancer-type"                            = "external"
+      "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type"                 = "ip"
+      "service.beta.kubernetes.io/aws-load-balancer-scheme"                          = "internet-facing"
+      # TLS terminated at the NLB; plain TCP forwarded to pods on port 9000
+      "service.beta.kubernetes.io/aws-load-balancer-ssl-cert"                        = aws_acm_certificate.sonarqube.arn
+      "service.beta.kubernetes.io/aws-load-balancer-ssl-ports"                       = "443"
+      "service.beta.kubernetes.io/aws-load-balancer-backend-protocol"                = "tcp"
+      # HTTP health check against the SonarQube status endpoint
+      "service.beta.kubernetes.io/aws-load-balancer-healthcheck-path"                = "/api/system/status"
+      "service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol"            = "HTTP"
+      "service.beta.kubernetes.io/aws-load-balancer-healthcheck-healthy-threshold"   = "2"
+      "service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold" = "2"
+    }
+  }
+  spec {
+    selector = {
+      app     = "sonarqube-dce"
+      release = "sonarqube"
+    }
+    type = "LoadBalancer"
+    port {
+      port        = 443
+      target_port = 9000
+      protocol    = "TCP"
+    }
+  }
+  depends_on = [
+    helm_release.sonarqube,
+    helm_release.aws_load_balancer_controller
+  ]
 }
 
 output "sonarqube_url" {

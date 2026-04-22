@@ -8,14 +8,15 @@ data "aws_route53_zone" "existing" {
   private_zone = false
 }
 
-# Data source to get the NLB created by the AWS Load Balancer Controller for the SonarQube service
+# Data source to get the NLB provisioned for the standalone sonarqube-nlb Service
 data "aws_lb" "sonarqube_nlb" {
   depends_on = [
-    helm_release.sonarqube
+    kubernetes_service.sonarqube_nlb
   ]
 
   tags = {
-    "kubernetes.io/service-name" = "default/sonarqube-sonarqube-dce"
+    "service.k8s.aws/resource" = "LoadBalancer"
+    "service.k8s.aws/stack"    = "default/sonarqube-nlb"
   }
 }
 

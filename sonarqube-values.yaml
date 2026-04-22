@@ -9,6 +9,51 @@ ApplicationNodes:
 searchNodes:
   replicaCount: 3
 
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 0
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop: ["ALL"]
+
+  readinessProbe:
+    initialDelaySeconds: 0
+    periodSeconds: 30
+    failureThreshold: 6
+    timeoutSeconds: 1
+  livenessProbe:
+    initialDelaySeconds: 0
+    periodSeconds: 30
+    failureThreshold: 6
+    timeoutSeconds: 1
+  startupProbe:
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    failureThreshold: 24
+    timeoutSeconds: 1
+
+  resources:
+    limits:
+      cpu: 800m
+      memory: 3072M
+      ephemeral-storage: 512000M
+    requests:
+      cpu: 400m
+      memory: 3072M
+      ephemeral-storage: 1536M
+
+  persistence:
+    enabled: true
+    annotations: {}
+    storageClass: gp3
+    accessMode: ReadWriteOnce
+    size: 5Gi
+    uid: 1000
+    guid: 0
+
 monitoringPasscodeSecretName: "sonarqube-eks-monitoring-password"
 monitoringPasscodeSecretKey: "password"
 

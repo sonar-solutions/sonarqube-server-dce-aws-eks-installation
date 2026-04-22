@@ -201,7 +201,6 @@ DNS and certificate validation:
 - Internet Gateway and NAT Gateways
 - Route tables and security groups
 - RDS PostgreSQL instance
-- EFS file system and mount targets
 - Application Load Balancer
 - Route53 hosted zone and records
 - ACM SSL certificate
@@ -216,3 +215,30 @@ DNS and certificate validation:
 - Security groups restrict access to necessary ports only
 - Private subnets for worker nodes and database
 - Network ACLs for additional security layers
+
+## ⚠️ Known Issue: `terraform destroy` VPC Deletion Failure
+
+### What happens
+
+`terraform destroy` may fail with errors like:
+
+```
+Error: deleting EC2 Subnet (...): DependencyViolation: The subnet '...' has dependencies and cannot be deleted.
+Error: deleting EC2 Internet Gateway (...): Network ... has some mapped public address(es).
+Error: deleting EC2 VPC (...): DependencyViolation: The vpc '...' has dependencies and cannot be deleted.
+```
+
+### Why it happens
+
+The AWS Load Balancer Controller (running inside the cluster) creates an NLB, security groups, and cross-SG ingress rules when the SonarQube service is provisioned. These resources are **not tracked in Terraform state** because they are created by the controller at runtime, not by Terraform directly. When `terraform destroy` tears down the EKS cluster it does not know to clean these up first, leaving them attached to the VPC.
+
+### How to fix
+
+Run the cleanup script before retrying `terraform destroy`. The script removes orphaned NLBs, target groups, cross-SG rules, and `k8s-*` security groups from the VPC, then cleans up Terraform state:
+
+```bash
+./pre-destroy-cleanup.sh
+terraform destroy -auto-approve
+```
+
+The script can be run safely at any point — before the first destroy attempt (recommended), or after a failed destroy to unblock retries. It is idempotent: if the resources are already gone, each step is skipped.

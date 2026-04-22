@@ -34,22 +34,37 @@ variable "vpc_cidr" {
   type = string
 }
 
-# Private subnets for the cluster
+# Private subnets for the cluster (one per AZ, minimum 2 required by RDS)
 variable "private_subnets" {
-  description = "Private subnets for the cluster"
+  description = "Private subnets for the cluster (one per AZ)"
   type = list(string)
+
+  validation {
+    condition     = length(var.private_subnets) >= 2
+    error_message = "At least 2 private subnets are required (RDS subnet group needs subnets in at least 2 AZs)."
+  }
 }
 
-# Public subnets for the cluster
+# Public subnets for the cluster (one per AZ, minimum 2 required by RDS)
 variable "public_subnets" {
-  description = "Public subnets for the cluster"
+  description = "Public subnets for the cluster (one per AZ)"
   type = list(string)
+
+  validation {
+    condition     = length(var.public_subnets) >= 2
+    error_message = "At least 2 public subnets are required."
+  }
 }
 
-# Availability zones for the EKS cluster
+# Availability zones for the EKS cluster (minimum 2 required by RDS)
 variable "availability_zones" {
-  description = "Availability zones for the cluster"
+  description = "Availability zones for the cluster (minimum 2 required by RDS)"
   type = list(string)
+
+  validation {
+    condition     = length(var.availability_zones) >= 2
+    error_message = "At least 2 availability zones are required (RDS subnet group needs subnets in at least 2 AZs)."
+  }
 }
 
 # AWS tag identifying owner of the resurces created
