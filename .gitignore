@@ -1,0 +1,18 @@
+# Terraform state and local files
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terraform/
+.terraform.lock.hcl
+.terraform.tfstate.lock.info
+
+
+# Sensitive files
+*.pem
+*.key
+
+# OS
+.DS_Store
+
+.claude/
+terraform.tfvars.json
