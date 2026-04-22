@@ -34,10 +34,6 @@ resource "aws_security_group" "rds" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  depends_on = [
-    module.eks
-  ]
-
   tags = {
     Name = "${var.cluster_name}-rds-sg"
     Environment = var.environment
@@ -71,11 +67,6 @@ resource "aws_db_instance" "sonarqube" {
 
   skip_final_snapshot = true
   deletion_protection = false
-
-  depends_on = [
-    random_password.sonarqube_db_password,
-    module.eks
-  ]
 
   tags = {
     Name = "${var.cluster_name}-db"
